@@ -336,6 +336,7 @@ def estimate_stop_times(
                 'eta_minutes': round(eta_minutes, 2),
                 'eta_formatted': eta_formatted,
                 'eta_timestamp': eta_ts.isoformat(),
+                'features': features,  # Include input features for debugging
             })
 
         except Exception as e:
