@@ -1,8 +1,11 @@
 # ETA-UI Setup Guide
 
 ## Prerequisites
-- Python 3.9+
-- pip
+- [uv](https://docs.astral.sh/uv/) - Fast Python package manager
+  ```bash
+  # Install uv (Mac/Linux)
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  ```
 
 ## Quick Start (Mac)
 
@@ -11,27 +14,22 @@
 cd ~/Desktop/git/eta-ui
 ```
 
-### 2. Create Virtual Environment
+### 2. Sync Dependencies
 ```bash
-python3 -m venv venv
-source venv/bin/activate
+# uv automatically creates venv and installs everything
+uv sync
 ```
 
-### 3. Install Dependencies
-```bash
-pip install -r requirements.txt
-```
-
-### 4. Configure Environment
+### 3. Configure Environment
 ```bash
 cp .env.example .env
 # Edit .env and add your GTFS RT API key if you have one
 ```
 
-### 5. Run the Server
+### 4. Run the Server
 ```bash
-# From the eta-ui root directory
-python3 -m uvicorn backend.app:app --host 0.0.0.0 --port 5001 --reload
+# uv run automatically uses the project venv
+uv run uvicorn backend.app:app --host 0.0.0.0 --port 5001 --reload
 ```
 
 ### 6. Access the UI
