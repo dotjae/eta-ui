@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live ETA Prediction & Validation</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🚌 Live ETA Prediction & Validation</h1>
+            <p class="subtitle">Real-time arrival predictions with ML model tracking</p>
+        </header>
+
+        <nav class="tabs">
+            <button class="tab-button active" onclick="switchTab('single')">Single Stop</button>
+            <button class="tab-button" onclick="switchTab('multi')">Multi-Stop Dashboard</button>
+        </nav>
+
+        <!-- Single Stop Tracking (Original) -->
+        <div id="single-stop-tab" class="tab-content active">
+            <main class="grid">
+                <!-- Selection Panel -->
+                <div class="panel">
+                    <h2>1. Select Route & Trip</h2>
+                    
+                    <div id="routes-section">
+                        <h3>Active Routes</h3>
+                        <div id="routes-list" class="item-list">
+                            <p class="loading">Loading routes...</p>
+                        </div>
+                    </div>
+
+                    <div id="trips-section" class="hidden">
+                        <h3>Active Trips</h3>
+                        <div id="trips-list" class="item-list"></div>
+                    </div>
+
+                    <div id="stops-section" class="hidden">
+                        <h3>Upcoming Stops</h3>
+                        <div id="stops-list" class="item-list"></div>
+                    </div>
+                </div>
+
+                <!-- Live Tracking Panel -->
+                <div class="panel">
+                    <h2>2. Live Prediction Tracking</h2>
+                    
+                    <div id="no-session" class="info-box">
+                        <p>Select a route, trip, and stop to start tracking predictions.</p>
+                    </div>
+
+                    <div id="session-panel" class="hidden">
+                        <div class="session-header">
+                            <div>
+                                <h3 id="session-title"></h3>
+                                <p id="session-meta" class="meta-text"></p>
+                            </div>
+                            <button id="stop-session-btn" class="btn btn-danger">Stop Session</button>
+                        </div>
+
+                        <div id="latest-prediction" class="prediction-card">
+                            <div class="prediction-main">
+                                <div class="eta-display">--:--:--</div>
+                                <div class="distance-display">-- meters away</div>
+                            </div>
+                            <div class="prediction-meta">
+                                <span id="model-info">Model: --</span>
+                                <span id="update-time">Updated: --</span>
+                            </div>
+                        </div>
+
+                        <div id="arrival-notice" class="arrival-card hidden">
+                            <h3>🎉 Bus Arrived!</h3>
+                            <p id="arrival-time"></p>
+                        </div>
+
+                        <div id="evaluation-panel" class="evaluation-card hidden">
+                            <h3>📊 Prediction Accuracy</h3>
+                            <div id="evaluation-content"></div>
+                        </div>
+
+                        <div class="prediction-history">
+                            <h4>Prediction History</h4>
+                            <canvas id="prediction-chart"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </main>
+        </div>
+
+        <!-- Multi-Stop Dashboard (New) -->
+        <div id="multi-stop-tab" class="tab-content">
+            <main>
+                <div class="panel">
+                    <h2>Multi-Stop Trip Tracking</h2>
+                    
+                    <div id="multi-select-section">
+                        <p>Select a trip to track predictions for ALL upcoming stops simultaneously:</p>
+                        
+                        <div id="multi-trips-section">
+                            <h3>Active Trips</h3>
+                            <div id="multi-trips-list" class="item-list">
+                                <p class="loading">Loading trips...</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="multi-session-panel" class="hidden">
+                        <div class="session-header">
+                            <div>
+                                <h3 id="multi-session-title"></h3>
+                                <p id="multi-session-meta" class="meta-text"></p>
+                            </div>
+                            <button id="stop-multi-session-btn" class="btn btn-danger">Stop Session</button>
+                        </div>
+
+                        <div id="multi-stops-grid" class="stops-grid">
+                            <!-- Dynamically populated with stop cards -->
+                        </div>
+
+                        <div id="multi-overall-metrics" class="evaluation-card hidden">
+                            <h3>📊 Overall Accuracy Metrics</h3>
+                            <div id="multi-metrics-content"></div>
+                        </div>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="/static/app.js"></script>
+    <script src="/static/multi-stop.js"></script>
+</body>
+</html>

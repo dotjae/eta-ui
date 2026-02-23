@@ -43,6 +43,14 @@ from backend.prediction_session import (
 )
 from backend.prediction_service import PredictionService
 from backend.arrival_detector import ArrivalDetector
+from backend.multi_stop_session import (
+    create_multi_stop_session,
+    get_multi_stop_session,
+    get_active_multi_stop_sessions,
+    delete_multi_stop_session,
+    MultiStopSession,
+)
+from backend.multi_stop_service import MultiStopService
 
 # Configure logging
 logging.basicConfig(
@@ -70,12 +78,13 @@ app.add_middleware(
 # Global service instances
 prediction_service: Optional[PredictionService] = None
 arrival_detector: Optional[ArrivalDetector] = None
+multi_stop_service: Optional[MultiStopService] = None
 
 
 @app.on_event("startup")
 async def startup_event():
     """Initialize services on startup"""
-    global prediction_service, arrival_detector
+    global prediction_service, arrival_detector, multi_stop_service
 
     logger.info("Starting Live ETA UI backend...")
 
@@ -101,6 +110,11 @@ async def shutdown_event():
     if arrival_detector:
         for session_id in list(arrival_detector._running_detectors.keys()):
             await arrival_detector.stop_detection(session_id)
+
+    # Cancel all multi-stop sessions
+    if multi_stop_service:
+        for session_id in list(multi_stop_service._running_loops.keys()):
+            await multi_stop_service.stop_session(session_id)
 
 
 # Pydantic models for API
@@ -451,7 +465,282 @@ async def list_sessions():
     return [s.to_dict() for s in active]
 
 
-# WebSocket for real-time updates
+# Multi-Stop Session Endpoints
+
+class MultiStopSessionCreateRequest(BaseModel):
+    trip_id: str
+
+
+@app.post("/api/multi-sessions", response_model=Dict[str, Any])
+async def create_multi_stop_prediction_session(
+    request: MultiStopSessionCreateRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Create a new multi-stop prediction session for an entire trip
+    
+    This tracks predictions for ALL upcoming stops simultaneously
+    and validates as each stop is reached.
+    """
+    global multi_stop_service
+
+    settings = get_settings()
+    data_access = GTFSDataAccess(db)
+    static_feed_id = settings.static_feed_id
+
+    # Initialize service if needed
+    if multi_stop_service is None:
+        multi_stop_service = MultiStopService(data_access)
+
+    # Get trip info
+    trips = data_access.get_active_trips(settings.feed_name, since_minutes=60)
+    trip_info = None
+    for t in trips:
+        if t['trip_id'] == request.trip_id:
+            trip_info = t
+            break
+
+    if not trip_info:
+        raise HTTPException(status_code=404, detail="Trip not found or not active")
+
+    # Get all future stops for this trip
+    stops = data_access.get_future_stops(
+        feed_id=static_feed_id,
+        trip_id=request.trip_id,
+        current_stop_sequence=trip_info.get('current_stop_sequence')
+    )
+
+    if not stops:
+        raise HTTPException(status_code=404, detail="No upcoming stops found for this trip")
+
+    # Create multi-stop session
+    session = create_multi_stop_session(
+        trip_id=request.trip_id,
+        route_id=trip_info['route_id'],
+        vehicle_id=trip_info['vehicle_id'],
+        stops=stops,
+        data_dir=settings.validation_data_dir if hasattr(settings, 'validation_data_dir') else None,
+    )
+
+    # Start prediction and detection loop
+    await multi_stop_service.start_session(
+        session=session,
+        feed_id=static_feed_id,
+        feed_name=settings.feed_name,
+    )
+
+    logger.info(
+        f"Created multi-stop session {session.session_id} for trip {request.trip_id} "
+        f"tracking {len(stops)} stops"
+    )
+
+    return session.to_dict()
+
+
+@app.get("/api/multi-sessions/{session_id}")
+async def get_multi_stop_session_status(session_id: str):
+    """
+    Get current status of a multi-stop prediction session
+    """
+    session = get_multi_stop_session(session_id)
+
+    if not session:
+        raise HTTPException(status_code=404, detail="Multi-stop session not found")
+
+    return session.to_dict()
+
+
+@app.get("/api/multi-sessions/{session_id}/stop/{stop_id}/predictions")
+async def get_stop_predictions(session_id: str, stop_id: str):
+    """
+    Get all predictions for a specific stop in a multi-stop session
+    """
+    session = get_multi_stop_session(session_id)
+
+    if not session:
+        raise HTTPException(status_code=404, detail="Multi-stop session not found")
+
+    if stop_id not in session.stops:
+        raise HTTPException(status_code=404, detail="Stop not found in this session")
+
+    stop = session.stops[stop_id]
+
+    return {
+        'session_id': session_id,
+        'stop_id': stop_id,
+        'stop_name': stop.stop_name,
+        'stop_sequence': stop.stop_sequence,
+        'status': stop.status,
+        'actual_arrival': stop.actual_arrival.isoformat() if stop.actual_arrival else None,
+        'n_predictions': len(stop.predictions),
+        'predictions': [
+            {
+                'timestamp': p.timestamp.isoformat(),
+                'predicted_arrival': p.predicted_arrival.isoformat(),
+                'eta_seconds': p.eta_seconds,
+                'distance_meters': p.distance_meters,
+                'model_key': p.model_key,
+                'model_type': p.model_type,
+            }
+            for p in stop.predictions
+        ]
+    }
+
+
+@app.get("/api/multi-sessions/{session_id}/stop/{stop_id}/metrics")
+async def get_stop_metrics(session_id: str, stop_id: str):
+    """
+    Get validation metrics for a specific stop (only available after arrival)
+    """
+    session = get_multi_stop_session(session_id)
+
+    if not session:
+        raise HTTPException(status_code=404, detail="Multi-stop session not found")
+
+    try:
+        metrics = session.get_stop_metrics(stop_id)
+        return metrics
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.get("/api/multi-sessions/{session_id}/metrics")
+async def get_multi_session_metrics(session_id: str):
+    """
+    Get overall validation metrics across all completed stops
+    """
+    session = get_multi_stop_session(session_id)
+
+    if not session:
+        raise HTTPException(status_code=404, detail="Multi-stop session not found")
+
+    return session.compute_overall_metrics()
+
+
+@app.delete("/api/multi-sessions/{session_id}")
+async def stop_multi_session(session_id: str):
+    """
+    Stop and delete a multi-stop prediction session
+    """
+    global multi_stop_service
+
+    session = get_multi_stop_session(session_id)
+
+    if not session:
+        raise HTTPException(status_code=404, detail="Multi-stop session not found")
+
+    # Stop the service loop
+    if multi_stop_service:
+        await multi_stop_service.stop_session(session_id)
+
+    # Delete session
+    delete_multi_stop_session(session_id)
+
+    return {"message": "Multi-stop session stopped and deleted"}
+
+
+@app.get("/api/multi-sessions")
+async def list_multi_sessions():
+    """
+    List all active multi-stop sessions
+    """
+    active = get_active_multi_stop_sessions()
+
+    return [s.to_dict() for s in active]
+
+
+# WebSocket endpoints
+
+@app.websocket("/ws/multi/{session_id}")
+async def multi_stop_websocket_endpoint(websocket: WebSocket, session_id: str):
+    """
+    WebSocket endpoint for real-time multi-stop session updates
+    
+    Sends updates whenever predictions are made for any stop
+    and when arrivals are detected
+    """
+    await websocket.accept()
+
+    session = get_multi_stop_session(session_id)
+    if not session:
+        await websocket.send_json({"error": "Multi-stop session not found"})
+        await websocket.close()
+        return
+
+    logger.info(f"Multi-stop WebSocket connected for session {session_id}")
+
+    try:
+        # Track last known prediction count for each stop
+        last_counts = {stop_id: 0 for stop_id in session.stops.keys()}
+        last_status = {stop_id: session.stops[stop_id].status for stop_id in session.stops.keys()}
+
+        while True:
+            session_changed = False
+
+            # Check each stop for updates
+            for stop_id, stop in session.stops.items():
+                current_count = len(stop.predictions)
+                
+                # New prediction for this stop
+                if current_count > last_counts[stop_id]:
+                    latest = stop.predictions[-1]
+                    
+                    await websocket.send_json({
+                        'type': 'prediction',
+                        'stop_id': stop_id,
+                        'data': {
+                            'stop_name': stop.stop_name,
+                            'stop_sequence': stop.stop_sequence,
+                            'timestamp': latest.timestamp.isoformat(),
+                            'predicted_arrival': latest.predicted_arrival.isoformat(),
+                            'eta_seconds': latest.eta_seconds,
+                            'distance_meters': latest.distance_meters,
+                            'model_key': latest.model_key,
+                            'model_type': latest.model_type,
+                        }
+                    })
+                    
+                    last_counts[stop_id] = current_count
+                    session_changed = True
+
+                # Status changed (e.g., arrived)
+                if stop.status != last_status[stop_id]:
+                    if stop.status == 'arrived':
+                        await websocket.send_json({
+                            'type': 'arrival',
+                            'stop_id': stop_id,
+                            'data': {
+                                'stop_name': stop.stop_name,
+                                'stop_sequence': stop.stop_sequence,
+                                'arrival_time': stop.actual_arrival.isoformat() if stop.actual_arrival else None,
+                                'message': f'Arrived at {stop.stop_name}!'
+                            }
+                        })
+                    
+                    last_status[stop_id] = stop.status
+                    session_changed = True
+
+            # Check overall session status
+            if session.status not in ['active']:
+                await websocket.send_json({
+                    'type': 'session_status',
+                    'data': {
+                        'status': session.status,
+                        'message': f'Session {session.status}'
+                    }
+                })
+                break
+
+            await asyncio.sleep(1)
+
+    except WebSocketDisconnect:
+        logger.info(f"Multi-stop WebSocket disconnected for session {session_id}")
+    except Exception as e:
+        logger.error(f"Multi-stop WebSocket error: {e}", exc_info=True)
+    finally:
+        await websocket.close()
+
+
 @app.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
     """
